@@ -67,7 +67,7 @@ export async function callOpenRouter(
     throw new Error('OpenRouter response returned an empty completion content.');
   }
 
-  return content a  s string;
+  return content as string;
 }
 
 /**
