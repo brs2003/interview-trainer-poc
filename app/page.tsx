@@ -4,8 +4,8 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Header } from '@/components/Header';
 import { RoleSelector } from '@/components/RoleSelector';
-import { PersonaInput, Persona, InterviewSessionData } from '@/lib/types';
-import { generatePersonaPrompt, buildCandidateSystemPrompt, cleanJsonText } from '@/lib/prompts';
+import { SetupSubmission, Persona, InterviewSessionData } from '@/lib/types';
+import { generatePersonaPrompt, buildCandidateSystemPrompt, buildInterviewerSystemPrompt, cleanJsonText } from '@/lib/prompts';
 
 export default function SetupPage() {
   const router = useRouter();
@@ -13,10 +13,41 @@ export default function SetupPage() {
   const [error, setError] = useState<string | null>(null);
   const [inferredSummary, setInferredSummary] = useState<{ role: string; experience: string } | null>(null);
 
-  const handleStartInterview = async (input: PersonaInput) => {
+  const handleStartInterview = async (input: SetupSubmission) => {
     setIsLoading(true);
     setError(null);
     setInferredSummary(null);
+
+    if (input.sessionMode === 'candidate') {
+      try {
+        const systemPrompt = buildInterviewerSystemPrompt(input.interviewerPersona, input.candidateProfile);
+
+        const sessionData: InterviewSessionData = {
+          sessionMode: 'candidate',
+          role: input.candidateProfile.role,
+          years: input.candidateProfile.experience,
+          systemPrompt,
+          mode: 'structured',
+          jdText: input.candidateProfile.jdText,
+          timestamp: Date.now(),
+          interviewerPersona: input.interviewerPersona,
+          candidateProfile: input.candidateProfile,
+        };
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('interview_trainer_session', JSON.stringify(sessionData));
+        }
+
+        router.push('/interview');
+      } catch (err: unknown) {
+        console.error('Setup error:', err);
+        const msg = err instanceof Error ? err.message : 'Failed to prepare interviewer.';
+        setError(msg);
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
 
     try {
       // 1. Generate prompt based on input mode (structured or JD)
@@ -71,6 +102,7 @@ export default function SetupPage() {
 
       // 5. Build normalized session data
       const sessionData: InterviewSessionData = {
+        sessionMode: 'interviewer',
         role: finalRole,
         years: finalYears,
         persona,

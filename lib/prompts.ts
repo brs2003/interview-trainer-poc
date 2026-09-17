@@ -1,4 +1,4 @@
-import { Persona, PersonaInput } from './types';
+import { Persona, PersonaInput, InterviewerPersona, CandidateProfile } from './types';
 
 /**
  * Generates prompt for persona creation, supporting both structured pick (Mode A) and raw JD text (Mode B)
@@ -28,6 +28,59 @@ export function buildCandidateSystemPrompt(persona: Persona, fallbackRole: strin
   const gapsStr = Array.isArray(persona.gaps) ? persona.gaps.join(', ') : String(persona.gaps);
 
   return `You are ${persona.name}, a candidate interviewing for a ${role} position with ${years} years of experience. Background: ${persona.background}. You are strong in: ${strengthsStr}. You have real but realistic gaps in: ${gapsStr}. Speak in this style: ${persona.speaking_style}. Answer interview questions in first person, conversationally, the way a real candidate would speak out loud — 2-4 sentences per answer unless asked to elaborate. Stay strictly in character. Never break persona or mention you are an AI.`;
+}
+
+/**
+ * System prompt for the interviewer AI persona in role-reversal mode (AI interviews the user)
+ */
+export function buildInterviewerSystemPrompt(persona: InterviewerPersona, candidate: CandidateProfile): string {
+  const tacticsBlock = persona.tactics.length > 0
+    ? `\n\nSome example moves that fit your style (use these as inspiration, vary the exact wording, don't recite them verbatim every time):\n${persona.tactics.map((t) => `- ${t}`).join('\n')}`
+    : '';
+
+  return `You are ${persona.name}, "${persona.title}" — an interviewer with this
+personality: ${persona.traits}. Your difficulty level is ${persona.difficulty}.
+Your domain focus is ${persona.domainFocus}.${tacticsBlock}
+
+You are interviewing a candidate for a ${candidate.role} position with
+${candidate.experience} years of experience.
+${candidate.jdText ? `The job description is: """${candidate.jdText}"""` : ''}
+The candidate has told you their strengths are: ${candidate.strengths}.
+The candidate has told you their weaknesses are: ${candidate.weaknesses}.
+
+Deliberately probe the candidate's stated weaknesses with follow-up questions — don't
+avoid uncomfortable territory, that's the point of this practice session. Match your
+questioning style and intensity to your difficulty level and personality above.
+
+IMPORTANT — you cannot convey emotion through audio tone directly, so express your
+personality and reactions IN WORDS, as part of what you actually say out loud. Do not
+use asterisks, stage directions, or action descriptions — only words a real person
+would say out loud.
+
+Ask one question or reaction at a time, in character, 1-3 sentences. Never break
+character or mention you are an AI. Begin the interview now with your opening question
+— greet the candidate briefly and ask your first question.`;
+}
+
+/**
+ * Prompt to evaluate the HUMAN CANDIDATE's performance in role-reversal mode
+ */
+export function buildCandidateEvaluatorPrompt(
+  persona: InterviewerPersona,
+  candidate: CandidateProfile,
+  transcriptText: string
+): string {
+  let prompt = `You are evaluating a HUMAN CANDIDATE's interview performance based on this transcript, where they were interviewed by a simulated interviewer persona ("${persona.name}", ${persona.title}, difficulty: ${persona.difficulty}) for a ${candidate.role} position with ${candidate.experience} years of experience. The candidate had told the interviewer their strengths were: ${candidate.strengths}. The candidate had told the interviewer their weaknesses were: ${candidate.weaknesses}.
+
+Score the CANDIDATE (not the interviewer) on these dimensions, each 1-10 with a one-sentence justification: communication_clarity (clear, concise, well-organized spoken answers), technical_depth (accuracy and depth of domain knowledge demonstrated), structure_star (did answers to behavioral questions follow a situation/task/action/result structure with concrete outcomes?), weakness_handling (how well did they handle follow-up questions that probed their stated weaknesses — honesty, composure, growth framing), composure (how well did they hold up under the interviewer's pressure and pace, especially for Hard/Brutal difficulty personas). Also return strengths_shown (list of specific strengths the candidate actually demonstrated in their answers), improvement_areas (list of specific weak points in their answers), and suggestions (3-5 concrete, actionable suggestions for how this candidate could improve next time). Output ONLY valid JSON matching this shape: {scores: {communication_clarity: {score, justification}, technical_depth: {score, justification}, structure_star: {score, justification}, weakness_handling: {score, justification}, composure: {score, justification}}, strengths_shown: [...], improvement_areas: [...], suggestions: [...]}. No markdown fences, no preamble.`;
+
+  if (candidate.jdText && candidate.jdText.trim().length > 0) {
+    prompt += `\n\nAdditionally, here is the job description this interview was based on — use it as the ground truth for what topics/skills mattered most:\n"""\n${candidate.jdText.trim()}\n"""`;
+  }
+
+  prompt += `\n\nTRANSCRIPT:\n${transcriptText}`;
+
+  return prompt;
 }
 
 /**

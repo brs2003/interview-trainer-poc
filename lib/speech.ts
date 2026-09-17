@@ -147,6 +147,72 @@ export async function speakText(
   return utterance;
 }
 
+// Strips stray stage directions / action text an LLM might slip in despite
+// instructions not to (e.g. "*leans forward*") so TTS never reads them aloud.
+// Exported so callers can sanitize once and reuse the same string for both
+// the transcript and the TTS boundary-driven reveal (keeping char indices in sync).
+export function sanitizeForSpeech(text: string): string {
+  return text.replace(/\*[^*]*\*/g, '').replace(/\s{2,}/g, ' ').trim();
+}
+
+/**
+ * Speaks text using an explicit pitch/rate (e.g. an interviewer persona's voice
+ * tuning) rather than the gender-based heuristic used for the candidate persona.
+ */
+export async function speakWithVoiceTuning(
+  text: string,
+  voice: { pitch: number; rate: number },
+  onEnd?: () => void,
+  onError?: (err: any) => void,
+  shouldCancel?: () => boolean,
+  onBoundary?: (charIndex: number) => void
+): Promise<SpeechSynthesisUtterance | null> {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    console.warn('SpeechSynthesis is not supported in this browser environment.');
+    if (onEnd) onEnd();
+    return null;
+  }
+
+  window.speechSynthesis.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = 'en-US';
+  utterance.pitch = voice.pitch;
+  utterance.rate = voice.rate;
+
+  const voices = await getVoicesAsync();
+
+  if (shouldCancel && shouldCancel()) {
+    return null;
+  }
+
+  const preferredVoice = pickVoiceForGender(voices, undefined);
+  if (preferredVoice) {
+    utterance.voice = preferredVoice;
+  }
+
+  utterance.onboundary = (e: SpeechSynthesisEvent) => {
+    if (!onBoundary) return;
+    const charLength = (e as any).charLength as number | undefined;
+    const revealTo = charLength ? e.charIndex + charLength : e.charIndex;
+    onBoundary(revealTo);
+  };
+
+  utterance.onend = () => {
+    if (onBoundary) onBoundary(text.length);
+    if (onEnd) onEnd();
+  };
+
+  utterance.onerror = (e) => {
+    console.error('SpeechSynthesis error:', e);
+    if (onError) onError(e);
+    if (onEnd) onEnd();
+  };
+
+  window.speechSynthesis.speak(utterance);
+  return utterance;
+}
+
 export function stopSpeaking() {
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     window.speechSynthesis.cancel();
