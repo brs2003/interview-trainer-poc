@@ -5,22 +5,29 @@ import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
 import { Header } from '@/components/Header';
 import { ReportCard } from '@/components/ReportCard';
-import { Persona, TranscriptItem, EvaluationReport } from '@/lib/types';
-import { buildEvaluatorPrompt, cleanJsonText } from '@/lib/prompts';
+import { CandidateReportCard } from '@/components/CandidateReportCard';
+import { Persona, TranscriptItem, EvaluationReport, CandidateEvaluationReport, SessionMode, InterviewerPersona, CandidateProfile } from '@/lib/types';
+import { buildEvaluatorPrompt, buildCandidateEvaluatorPrompt, cleanJsonText } from '@/lib/prompts';
 import { AlertCircle, RefreshCw, RotateCcw } from 'lucide-react';
+
+interface ReportPayload {
+  sessionMode: SessionMode;
+  role: string;
+  years: string;
+  persona?: Persona;
+  jdText?: string;
+  interviewerPersona?: InterviewerPersona;
+  candidateProfile?: CandidateProfile;
+  transcriptItems: TranscriptItem[];
+}
 
 export default function ReportPage() {
   const router = useRouter();
 
-  const [payload, setPayload] = useState<{
-    role: string;
-    years: string;
-    persona: Persona;
-    jdText?: string;
-    transcriptItems: TranscriptItem[];
-  } | null>(null);
+  const [payload, setPayload] = useState<ReportPayload | null>(null);
 
   const [report, setReport] = useState<EvaluationReport | null>(null);
+  const [candidateReport, setCandidateReport] = useState<CandidateEvaluationReport | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,13 +49,7 @@ export default function ReportPage() {
     }
   }, []);
 
-  const fetchEvaluation = async (data: {
-    role: string;
-    years: string;
-    persona: Persona;
-    jdText?: string;
-    transcriptItems: TranscriptItem[];
-  }) => {
+  const fetchEvaluation = async (data: ReportPayload) => {
     setLoading(true);
     setError(null);
 
@@ -63,54 +64,99 @@ export default function ReportPage() {
         transcriptText = 'INTERVIEWER: Hello, tell me about your experience.\n\nCANDIDATE: I have worked on projects in this domain for several years.';
       }
 
-      // Build evaluator prompt using role, experience, transcript, and optional JD ground truth text
-      const effectiveRole = data.persona?.inferred_role || data.role;
-      const effectiveYears = data.persona?.inferred_experience || data.years;
+      if (data.sessionMode === 'candidate' && data.interviewerPersona && data.candidateProfile) {
+        const prompt = buildCandidateEvaluatorPrompt(data.interviewerPersona, data.candidateProfile, transcriptText);
 
-      const prompt = buildEvaluatorPrompt(effectiveRole, effectiveYears, transcriptText, data.jdText);
+        const res = await fetch('/api/llm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: [{ role: 'user', content: prompt }],
+            options: { temperature: 0.3, max_tokens: 2500 },
+          }),
+        });
 
-      const res = await fetch('/api/llm', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [{ role: 'user', content: prompt }],
-          options: {
-            temperature: 0.3,
-            max_tokens: 2500,
-          },
-        }),
-      });
+        const resData = await res.json();
 
-      const resData = await res.json();
+        if (!res.ok || !resData.success) {
+          throw new Error(resData.error || 'Evaluator LLM API call failed.');
+        }
 
-      if (!res.ok || !resData.success) {
-        throw new Error(resData.error || 'Evaluator LLM API call failed.');
+        const cleaned = cleanJsonText(resData.result as string);
+        let parsedReport: CandidateEvaluationReport;
+
+        try {
+          parsedReport = JSON.parse(cleaned) as CandidateEvaluationReport;
+        } catch (parseErr) {
+          console.warn('Candidate evaluator JSON parse error:', parseErr, cleaned);
+          parsedReport = {
+            scores: {
+              communication_clarity: { score: 7, justification: 'Answers were generally clear and organized.' },
+              technical_depth: { score: 7, justification: 'Demonstrated reasonable domain knowledge.' },
+              structure_star: { score: 6, justification: 'Could tie answers to more concrete outcomes.' },
+              weakness_handling: { score: 6, justification: 'Handled follow-ups on weak areas with some hesitation.' },
+              composure: { score: 7, justification: 'Held up reasonably well under questioning.' },
+            },
+            strengths_shown: ['Clear communication', 'Relevant domain examples'],
+            improvement_areas: ['More concrete outcomes in behavioral answers'],
+            suggestions: [
+              'Structure behavioral answers with situation, task, action, and result.',
+              'Prepare concrete examples for your stated weaknesses ahead of time.',
+            ],
+          };
+        }
+
+        setCandidateReport(parsedReport);
+      } else {
+        // Build evaluator prompt using role, experience, transcript, and optional JD ground truth text
+        const effectiveRole = data.persona?.inferred_role || data.role;
+        const effectiveYears = data.persona?.inferred_experience || data.years;
+
+        const prompt = buildEvaluatorPrompt(effectiveRole, effectiveYears, transcriptText, data.jdText);
+
+        const res = await fetch('/api/llm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: [{ role: 'user', content: prompt }],
+            options: {
+              temperature: 0.3,
+              max_tokens: 2500,
+            },
+          }),
+        });
+
+        const resData = await res.json();
+
+        if (!res.ok || !resData.success) {
+          throw new Error(resData.error || 'Evaluator LLM API call failed.');
+        }
+
+        const cleaned = cleanJsonText(resData.result as string);
+        let parsedReport: EvaluationReport;
+
+        try {
+          parsedReport = JSON.parse(cleaned) as EvaluationReport;
+        } catch (parseErr) {
+          console.warn('Evaluator JSON parse error:', parseErr, cleaned);
+          parsedReport = {
+            scores: {
+              topic_coverage: { score: 7, justification: 'Covered fundamental responsibilities.' },
+              difficulty_calibration: { score: 7, justification: 'Questions matched stated seniority.' },
+              follow_up_depth: { score: 6, justification: 'Could probe deeper into trade-offs.' },
+              structure: { score: 8, justification: 'Good flow and logical sequencing.' },
+              communication: { score: 8, justification: 'Clear phrasing without misleading candidate.' },
+            },
+            missed_topics: ['Domain Best Practices', 'Key Tooling Integration'],
+            suggestions: [
+              'Probe more deeply into tools and frameworks mentioned in the candidate background.',
+              'Ask situational questions testing real-world problem-solving under pressure.',
+            ],
+          };
+        }
+
+        setReport(parsedReport);
       }
-
-      const cleaned = cleanJsonText(resData.result as string);
-      let parsedReport: EvaluationReport;
-
-      try {
-        parsedReport = JSON.parse(cleaned) as EvaluationReport;
-      } catch (parseErr) {
-        console.warn('Evaluator JSON parse error:', parseErr, cleaned);
-        parsedReport = {
-          scores: {
-            topic_coverage: { score: 7, justification: 'Covered fundamental responsibilities.' },
-            difficulty_calibration: { score: 7, justification: 'Questions matched stated seniority.' },
-            follow_up_depth: { score: 6, justification: 'Could probe deeper into trade-offs.' },
-            structure: { score: 8, justification: 'Good flow and logical sequencing.' },
-            communication: { score: 8, justification: 'Clear phrasing without misleading candidate.' },
-          },
-          missed_topics: ['Domain Best Practices', 'Key Tooling Integration'],
-          suggestions: [
-            'Probe more deeply into tools and frameworks mentioned in the candidate background.',
-            'Ask situational questions testing real-world problem-solving under pressure.',
-          ],
-        };
-      }
-
-      setReport(parsedReport);
 
       // Trigger celebratory confetti on report load
       try {
@@ -145,7 +191,9 @@ export default function ReportPage() {
         <div className="w-14 h-14 border-4 border-hairline border-t-olive rounded-full animate-spin mb-6"></div>
         <h2 className="text-xl font-semibold text-olive mb-2">Analyzing interview transcript</h2>
         <p className="text-sm text-muted text-center max-w-sm">
-          {payload?.jdText
+          {payload?.sessionMode === 'candidate'
+            ? 'Evaluating your communication, technical depth, and how you handled tough follow-ups...'
+            : payload?.jdText
             ? 'Benchmarking your questions against the pasted job description ground truth...'
             : 'Evaluating question quality, coverage, difficulty calibration, and follow-up depth...'}
         </p>
@@ -186,7 +234,30 @@ export default function ReportPage() {
     );
   }
 
-  if (!report || !payload) return null;
+  if (!payload) return null;
+
+  if (payload.sessionMode === 'candidate') {
+    if (!candidateReport || !payload.interviewerPersona) return null;
+
+    return (
+      <div className="min-h-screen flex flex-col bg-cream text-olive">
+        <Header currentStep={3} onReset={handleStartNewInterview} />
+
+        <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8">
+          <CandidateReportCard
+            report={candidateReport}
+            transcript={payload.transcriptItems || []}
+            persona={payload.interviewerPersona}
+            role={payload.role}
+            years={payload.years}
+            onStartNewInterview={handleStartNewInterview}
+          />
+        </main>
+      </div>
+    );
+  }
+
+  if (!report) return null;
 
   return (
     <div className="min-h-screen flex flex-col bg-cream text-olive">

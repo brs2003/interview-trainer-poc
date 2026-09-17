@@ -4,7 +4,8 @@ import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Header } from '@/components/Header';
 import { VoiceCallPanel } from '@/components/VoiceCallPanel';
-import { Persona, TranscriptItem, ChatMessage, InterviewSessionData } from '@/lib/types';
+import { CandidateVoiceCallPanel } from '@/components/CandidateVoiceCallPanel';
+import { TranscriptItem, ChatMessage, InterviewSessionData } from '@/lib/types';
 
 export default function InterviewPage() {
   const router = useRouter();
@@ -17,7 +18,9 @@ export default function InterviewPage() {
       if (stored) {
         try {
           const parsed = JSON.parse(stored);
-          if (parsed.role && parsed.persona && parsed.systemPrompt) {
+          const isValidInterviewerSession = parsed.sessionMode === 'interviewer' && parsed.role && parsed.persona && parsed.systemPrompt;
+          const isValidCandidateSession = parsed.sessionMode === 'candidate' && parsed.interviewerPersona && parsed.candidateProfile && parsed.systemPrompt;
+          if (isValidInterviewerSession || isValidCandidateSession) {
             setSession(parsed);
           } else {
             router.push('/');
@@ -35,10 +38,13 @@ export default function InterviewPage() {
   const handleEndInterview = (transcriptItems: TranscriptItem[], chatHistory: ChatMessage[]) => {
     if (typeof window !== 'undefined' && session) {
       const reportPayload = {
+        sessionMode: session.sessionMode,
         role: session.role,
         years: session.years,
         persona: session.persona,
         jdText: session.jdText,
+        interviewerPersona: session.interviewerPersona,
+        candidateProfile: session.candidateProfile,
         transcriptItems,
         chatHistory,
         endedAt: Date.now(),
@@ -74,13 +80,22 @@ export default function InterviewPage() {
       <Header currentStep={2} onReset={handleReset} />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8">
-        <VoiceCallPanel
-          role={session.role as any}
-          years={session.years as any}
-          persona={session.persona}
-          personaSystemPrompt={session.systemPrompt}
-          onEndInterview={handleEndInterview}
-        />
+        {session.sessionMode === 'candidate' && session.interviewerPersona && session.candidateProfile ? (
+          <CandidateVoiceCallPanel
+            persona={session.interviewerPersona}
+            candidateProfile={session.candidateProfile}
+            interviewerSystemPrompt={session.systemPrompt}
+            onEndInterview={handleEndInterview}
+          />
+        ) : session.persona ? (
+          <VoiceCallPanel
+            role={session.role as any}
+            years={session.years as any}
+            persona={session.persona}
+            personaSystemPrompt={session.systemPrompt}
+            onEndInterview={handleEndInterview}
+          />
+        ) : null}
       </main>
     </div>
   );

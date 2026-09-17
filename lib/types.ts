@@ -45,12 +45,53 @@ export interface EvaluationReport {
   suggestions: string[];
 }
 
+export type SessionMode = 'interviewer' | 'candidate';
+
+export interface InterviewerPersona {
+  id: string;
+  name: string;
+  title: string;
+  difficulty: 'Easy' | 'Medium' | 'Hard' | 'Brutal';
+  domainFocus: string;
+  traits: string;
+  tactics: string[];
+  voice: { pitch: number; rate: number };
+}
+
+export interface CandidateProfile {
+  role: string;
+  experience: string;
+  strengths: string;
+  weaknesses: string;
+  jdText?: string;
+}
+
+export interface CandidateEvaluationReport {
+  scores: {
+    communication_clarity: DimensionScore;
+    technical_depth: DimensionScore;
+    structure_star: DimensionScore;
+    weakness_handling: DimensionScore;
+    composure: DimensionScore;
+  };
+  strengths_shown: string[];
+  improvement_areas: string[];
+  suggestions: string[];
+}
+
+export type SetupSubmission =
+  | ({ sessionMode: 'interviewer' } & PersonaInput)
+  | { sessionMode: 'candidate'; candidateProfile: CandidateProfile; interviewerPersona: InterviewerPersona };
+
 export interface InterviewSessionData {
+  sessionMode: SessionMode;
   role: string;
   years: string;
-  persona: Persona;
+  persona?: Persona;
   systemPrompt: string;
   mode: SetupMode;
   jdText?: string;
   timestamp?: number;
+  interviewerPersona?: InterviewerPersona;
+  candidateProfile?: CandidateProfile;
 }
