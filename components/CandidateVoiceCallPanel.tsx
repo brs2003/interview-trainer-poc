@@ -2,7 +2,11 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { InterviewerPersona, CandidateProfile, TranscriptItem, ChatMessage } from '@/lib/types';
-import { isSpeechRecognitionSupported, createSpeechRecognition, speakWithVoiceTuning, sanitizeForSpeech, stopSpeaking } from '@/lib/speech';
+import { useVoiceInput } from '@/lib/voiceInput';
+import { createSpeechStream, stopSpeaking, sanitizeForSpeech, extractCompleteSentences, SpeechStreamHandle } from '@/lib/voiceOutput';
+import { markTiming } from '@/lib/timing';
+import { Avatar } from '@/components/Avatar';
+import { MicWaveform } from '@/components/MicWaveform';
 import { Mic, MicOff, Volume2, Send, Square, AlertCircle, Bot, User, MessageSquare, ShieldAlert } from 'lucide-react';
 
 interface CandidateVoiceCallPanelProps {
@@ -21,25 +25,21 @@ export function CandidateVoiceCallPanel({
   // Transcript state
   const [transcriptItems, setTranscriptItems] = useState<TranscriptItem[]>([]);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
-  const [interimText, setInterimText] = useState<string>('');
   const [spokenText, setSpokenText] = useState<string>('');
 
   // Call status state
-  const [isListening, setIsListening] = useState<boolean>(false);
+  const [micToggleOn, setMicToggleOn] = useState<boolean>(false);
   const [isInterviewerSpeaking, setIsInterviewerSpeaking] = useState<boolean>(false);
   const [isLLMThinking, setIsLLMThinking] = useState<boolean>(false);
 
   // Errors & Fallbacks
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [browserSupported, setBrowserSupported] = useState<boolean>(true);
+  const [micSupported, setMicSupported] = useState<boolean>(true);
   const [manualInputText, setManualInputText] = useState<string>('');
   const [hasEnded, setHasEnded] = useState<boolean>(false);
+  const [interimTranscript, setInterimTranscript] = useState<string>('');
 
-  // Refs
-  const recognitionRef = useRef<any>(null);
-  const isListeningRef = useRef<boolean>(false);
-  const isInterviewerSpeakingRef = useRef<boolean>(false);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   const interviewStatusRef = useRef<'active' | 'ended'>('active');
@@ -48,6 +48,8 @@ export function CandidateVoiceCallPanel({
   const hasStartedRef = useRef<boolean>(false);
 
   const isInterviewEnded = () => interviewStatusRef.current === 'ended';
+
+  const micActive = micToggleOn && !isInterviewerSpeaking && !isLLMThinking && !hasEnded && micSupported;
 
   const stopAllSideEffects = () => {
     if (isInterviewEnded()) return;
@@ -60,41 +62,19 @@ export function CandidateVoiceCallPanel({
 
     streamReaderRef.current?.cancel().catch(() => {});
     streamReaderRef.current = null;
-
-    isListeningRef.current = false;
-    isInterviewerSpeakingRef.current = false;
-
-    const rec = recognitionRef.current;
-    if (rec) {
-      rec.onstart = null;
-      rec.onresult = null;
-      rec.onerror = null;
-      rec.onend = null;
-      try {
-        rec.abort();
-      } catch (e) {
-        // ignore
-      }
-      recognitionRef.current = null;
-    }
   };
 
   useEffect(() => {
-    isListeningRef.current = isListening;
-  }, [isListening]);
-
-  useEffect(() => {
-    isInterviewerSpeakingRef.current = isInterviewerSpeaking;
-  }, [isInterviewerSpeaking]);
-
-  useEffect(() => {
-    const supported = isSpeechRecognitionSupported();
-    setBrowserSupported(supported);
+    setMicSupported(typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia);
   }, []);
 
   useEffect(() => {
+    if (!micActive) setInterimTranscript('');
+  }, [micActive]);
+
+  useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [transcriptItems, interimText, isLLMThinking, spokenText]);
+  }, [transcriptItems, isLLMThinking, spokenText]);
 
   // Combined with the opening-question kickoff below so both reset atomically —
   // React 18 Strict Mode's dev-only double-invoke (mount -> cleanup -> mount)
@@ -118,98 +98,32 @@ export function CandidateVoiceCallPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const initRecognition = () => {
-    if (recognitionRef.current) return recognitionRef.current;
-
-    const rec = createSpeechRecognition();
-    if (!rec) return null;
-
-    rec.onstart = () => {
+  const { levels, isTranscribing } = useVoiceInput({
+    active: micActive,
+    onTranscript: (text) => {
       if (isInterviewEnded()) return;
-      setIsListening(true);
-      setPermissionError(null);
-    };
-
-    rec.onresult = (event: any) => {
+      setInterimTranscript('');
+      handleCandidateAnswer(text);
+    },
+    onInterimTranscript: (text) => {
       if (isInterviewEnded()) return;
-
-      let finalTranscript = '';
-      let interimTranscript = '';
-
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const transcriptPart = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcriptPart;
-        } else {
-          interimTranscript += transcriptPart;
-        }
-      }
-
-      if (interimTranscript) {
-        setInterimText(interimTranscript);
-      }
-
-      if (finalTranscript && finalTranscript.trim().length > 0) {
-        setInterimText('');
-        handleCandidateAnswer(finalTranscript.trim());
-      }
-    };
-
-    rec.onerror = (event: any) => {
+      setInterimTranscript(text);
+    },
+    onError: (message) => {
       if (isInterviewEnded()) return;
-
-      console.error('Speech recognition error:', event.error);
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        setPermissionError('Microphone permission was denied. Please allow microphone access in your browser bar.');
-        setIsListening(false);
-      } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
-        setApiError(`Speech recognition error: ${event.error}`);
-      }
-    };
-
-    rec.onend = () => {
+      setApiError(message);
+    },
+    onPermissionDenied: () => {
       if (isInterviewEnded()) return;
-
-      setIsListening(false);
-      if (isListeningRef.current && !isInterviewerSpeakingRef.current) {
-        try {
-          rec.start();
-        } catch (e) {
-          // ignore double start
-        }
-      }
-    };
-
-    recognitionRef.current = rec;
-    return rec;
-  };
+      setPermissionError('Microphone permission was denied. Please allow microphone access in your browser bar.');
+      setMicToggleOn(false);
+    },
+  });
 
   const toggleListening = () => {
-    if (!browserSupported || isInterviewEnded()) return;
-
-    if (isListening) {
-      setIsListening(false);
-      isListeningRef.current = false;
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {
-          // ignore
-        }
-      }
-    } else {
-      const rec = initRecognition();
-      if (rec) {
-        try {
-          setPermissionError(null);
-          rec.start();
-          setIsListening(true);
-          isListeningRef.current = true;
-        } catch (e) {
-          console.error('Start recognition error:', e);
-        }
-      }
-    }
+    if (!micSupported || isInterviewEnded()) return;
+    setPermissionError(null);
+    setMicToggleOn((prev) => !prev);
   };
 
   // Requests the interviewer's next line from the given full message history
@@ -217,6 +131,7 @@ export function CandidateVoiceCallPanel({
   const fetchInterviewerReply = async (fullMessages: ChatMessage[]) => {
     setIsLLMThinking(true);
     setApiError(null);
+    markTiming('llm-request-sent');
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -256,33 +171,14 @@ export function CandidateVoiceCallPanel({
       const reader = response.body.getReader();
       streamReaderRef.current = reader;
       const decoder = new TextDecoder();
-      let interviewerReplyRaw = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        if (isInterviewEnded()) {
-          await reader.cancel().catch(() => {});
-          break;
-        }
-
-        interviewerReplyRaw += decoder.decode(value, { stream: true });
-      }
-
-      streamReaderRef.current = null;
-
-      if (isInterviewEnded()) return;
-
-      setIsLLMThinking(false);
-
-      const interviewerReplyText = sanitizeForSpeech(interviewerReplyRaw);
-
-      if (!interviewerReplyText) {
-        throw new Error('Interviewer AI returned an empty response.');
-      }
-
-      const interviewerTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      let sentenceBuffer = '';
+      let firstTokenSeen = false;
+      // Sanitized text is what's shown in the transcript and spoken, same as
+      // before — just built up incrementally, sentence by sentence, instead
+      // of sanitizing the whole reply in one pass at the end.
+      let interviewerReplyText = '';
+      let speechQueue: SpeechStreamHandle | null = null;
+      let interviewerTimestamp = '';
 
       const commitInterviewerReply = () => {
         const interviewerTranscriptItem: TranscriptItem = {
@@ -300,45 +196,79 @@ export function CandidateVoiceCallPanel({
         setSpokenText('');
       };
 
-      setIsInterviewerSpeaking(true);
-      isInterviewerSpeakingRef.current = true;
-      setSpokenText('');
-
-      speakWithVoiceTuning(
-        interviewerReplyText,
-        persona.voice,
-        () => {
-          if (isInterviewEnded()) return;
-
-          commitInterviewerReply();
-          setIsInterviewerSpeaking(false);
-          isInterviewerSpeakingRef.current = false;
-
-          if (isListeningRef.current && browserSupported) {
-            const rec = initRecognition();
-            if (rec) {
-              try {
-                rec.start();
-              } catch (e) {
-                // ignore
-              }
-            }
+      const ensureSpeechQueue = () => {
+        if (speechQueue) return speechQueue;
+        interviewerTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        setIsLLMThinking(false);
+        setIsInterviewerSpeaking(true);
+        setSpokenText('');
+        speechQueue = createSpeechStream(
+          persona.voice.voiceId,
+          () => {
+            if (isInterviewEnded()) return;
+            commitInterviewerReply();
+            setIsInterviewerSpeaking(false);
+          },
+          (err) => {
+            if (isInterviewEnded()) return;
+            console.error('TTS error:', err);
+            commitInterviewerReply();
+            setIsInterviewerSpeaking(false);
+          },
+          isInterviewEnded,
+          (charIndex) => {
+            if (isInterviewEnded()) return;
+            setSpokenText(interviewerReplyText.slice(0, charIndex));
           }
-        },
-        (err) => {
-          if (isInterviewEnded()) return;
+        );
+        return speechQueue;
+      };
 
-          console.error('TTS error:', err);
-          commitInterviewerReply();
-          setIsInterviewerSpeaking(false);
-          isInterviewerSpeakingRef.current = false;
-        },
-        isInterviewEnded,
-        (charIndex) => {
-          if (isInterviewEnded()) return;
-          setSpokenText(interviewerReplyText.slice(0, charIndex));
+      const pushSanitizedSentence = (raw: string) => {
+        const sanitized = sanitizeForSpeech(raw);
+        if (!sanitized) return;
+        interviewerReplyText += (interviewerReplyText ? ' ' : '') + sanitized;
+        ensureSpeechQueue().push(sanitized);
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        if (isInterviewEnded()) {
+          await reader.cancel().catch(() => {});
+          break;
         }
-      );
+
+        const chunk = decoder.decode(value, { stream: true });
+        if (!firstTokenSeen && chunk) {
+          firstTokenSeen = true;
+          markTiming('llm-first-token');
+        }
+        sentenceBuffer += chunk;
+
+        const { sentences, remainder } = extractCompleteSentences(sentenceBuffer);
+        sentenceBuffer = remainder;
+        for (const sentence of sentences) {
+          if (isInterviewEnded()) break;
+          pushSanitizedSentence(sentence);
+        }
+      }
+
+      streamReaderRef.current = null;
+
+      if (isInterviewEnded()) return;
+
+      if (sentenceBuffer.trim()) {
+        pushSanitizedSentence(sentenceBuffer);
+      }
+
+      if (!interviewerReplyText) {
+        setIsLLMThinking(false);
+        throw new Error('Interviewer AI returned an empty response.');
+      }
+
+      ensureSpeechQueue().end();
     } catch (err: unknown) {
       streamReaderRef.current = null;
       if (isInterviewEnded() || (err instanceof DOMException && err.name === 'AbortError')) {
@@ -358,14 +288,6 @@ export function CandidateVoiceCallPanel({
   // Handle candidate (the human user) answering the interviewer's question
   const handleCandidateAnswer = async (answerText: string) => {
     if (!answerText.trim() || isInterviewEnded()) return;
-
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {
-        // ignore
-      }
-    }
 
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -405,11 +327,10 @@ export function CandidateVoiceCallPanel({
   const handleEnd = () => {
     stopAllSideEffects();
 
-    setIsListening(false);
+    setMicToggleOn(false);
     setIsInterviewerSpeaking(false);
     setIsLLMThinking(false);
     setSpokenText('');
-    setInterimText('');
     setHasEnded(true);
 
     onEndInterview(transcriptItems, chatHistory);
@@ -420,13 +341,13 @@ export function CandidateVoiceCallPanel({
   return (
     <div className="w-full max-w-4xl mx-auto flex flex-col gap-6">
 
-      {!browserSupported && (
+      {!micSupported && (
         <div className="p-4 rounded-lg bg-white border border-hairline text-olive text-sm flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-muted shrink-0 mt-0.5" />
           <div>
-            <div className="font-medium">Speech recognition not supported</div>
+            <div className="font-medium">Microphone access not supported</div>
             <div className="text-muted text-sm mt-1">
-              Your current browser does not support the Web Speech API. For a hands-free voice experience, please open this app in <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>. You can still use the text input below to practice.
+              Your current browser does not support microphone capture. You can still use the text input below to practice.
             </div>
           </div>
         </div>
@@ -454,9 +375,7 @@ export function CandidateVoiceCallPanel({
 
       {/* Interviewer Persona Card */}
       <div className="bg-white border border-hairline rounded-xl p-5 flex items-center gap-4">
-        <div className="w-12 h-12 rounded-lg bg-cream border border-hairline flex items-center justify-center shrink-0">
-          <Bot className="w-6 h-6 text-olive" />
-        </div>
+        <Avatar name={persona.name} size="md" speaking={isInterviewerSpeaking} thinking={isLLMThinking} />
 
         <div>
           <div className="flex items-center gap-2">
@@ -499,13 +418,13 @@ export function CandidateVoiceCallPanel({
                   item.speaker === 'interviewer' ? 'bg-cream/60 -mx-6 px-6' : ''
                 }`}
               >
-                <div className="w-8 h-8 rounded-lg bg-white border border-hairline flex items-center justify-center shrink-0">
-                  {item.speaker === 'interviewer' ? (
-                    <Bot className="w-4 h-4 text-olive" />
-                  ) : (
+                {item.speaker === 'interviewer' ? (
+                  <Avatar name={persona.name} size="sm" />
+                ) : (
+                  <div className="w-8 h-8 rounded-lg bg-white border border-hairline flex items-center justify-center shrink-0">
                     <User className="w-4 h-4 text-olive" />
-                  )}
-                </div>
+                  </div>
+                )}
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-4 text-xs text-muted font-medium mb-1">
@@ -520,9 +439,7 @@ export function CandidateVoiceCallPanel({
 
           {isLLMThinking && (
             <div className="flex gap-3 items-center py-4">
-              <div className="w-8 h-8 rounded-lg bg-white border border-hairline flex items-center justify-center shrink-0">
-                <Bot className="w-4 h-4 text-olive" />
-              </div>
+              <Avatar name={persona.name} size="sm" thinking />
               <div className="flex items-center gap-2 text-sm text-muted">
                 <div className="w-3 h-3 border-2 border-muted/30 border-t-muted rounded-full animate-spin"></div>
                 <span>{persona.name} is thinking&hellip;</span>
@@ -532,9 +449,7 @@ export function CandidateVoiceCallPanel({
 
           {isInterviewerSpeaking && (
             <div className="flex gap-3 py-4">
-              <div className="w-8 h-8 rounded-lg bg-white border border-hairline flex items-center justify-center shrink-0">
-                <Volume2 className="w-4 h-4 text-olive" />
-              </div>
+              <Avatar name={persona.name} size="sm" speaking />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-4 text-xs text-muted font-medium mb-1">
                   <span>{persona.name}</span>
@@ -550,9 +465,16 @@ export function CandidateVoiceCallPanel({
           <div ref={transcriptEndRef} />
         </div>
 
-        {interimText && (
-          <div className="mt-3 px-4 py-2 rounded-full bg-cream border border-hairline text-muted text-sm max-w-full truncate">
-            <span className="text-olive font-medium mr-2">Hearing:</span> &quot;{interimText}&quot;
+        {isTranscribing && (
+          <div className="mt-3 px-4 py-2 rounded-full bg-cream border border-hairline text-muted text-sm max-w-full flex items-center gap-2 w-fit">
+            <div className="w-3 h-3 border-2 border-muted/30 border-t-muted rounded-full animate-spin"></div>
+            <span>Transcribing your answer&hellip;</span>
+          </div>
+        )}
+
+        {!isTranscribing && interimTranscript && !hasEnded && (
+          <div className="mt-3 px-4 py-2 rounded-full bg-cream border border-hairline text-olive text-sm max-w-full w-fit">
+            {interimTranscript}
           </div>
         )}
 
@@ -561,16 +483,18 @@ export function CandidateVoiceCallPanel({
             <button
               type="button"
               onClick={toggleListening}
-              disabled={!browserSupported || busy}
-              title={isListening ? 'Stop listening' : 'Start speaking'}
+              disabled={!micSupported || busy}
+              title={micActive ? 'Stop listening' : 'Start speaking'}
               className={`shrink-0 w-10 h-10 rounded-lg flex items-center justify-center transition-colors ${
-                isListening
+                micActive
                   ? 'bg-terracotta text-white'
                   : 'bg-cream border border-hairline text-olive hover:border-terracotta/60'
               } disabled:opacity-40 disabled:cursor-not-allowed`}
             >
-              {isListening ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+              {micActive ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
             </button>
+
+            <MicWaveform active={micActive} levels={levels} />
 
             <div className="hidden md:flex items-center gap-1.5 text-xs font-medium whitespace-nowrap">
               {isInterviewerSpeaking ? (
@@ -583,7 +507,7 @@ export function CandidateVoiceCallPanel({
                   <div className="w-3 h-3 border-2 border-muted/30 border-t-muted rounded-full animate-spin" />
                   Thinking&hellip;
                 </span>
-              ) : isListening ? (
+              ) : micActive ? (
                 <span className="flex items-center gap-1.5 text-terracotta-dark">
                   <span className="w-2 h-2 rounded-full bg-terracotta" />
                   Mic on

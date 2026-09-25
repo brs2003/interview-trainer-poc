@@ -2,7 +2,12 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Persona, TranscriptItem, ChatMessage } from '@/lib/types';
-import { isSpeechRecognitionSupported, createSpeechRecognition, speakText, stopSpeaking } from '@/lib/speech';
+import { useVoiceInput } from '@/lib/voiceInput';
+import { createSpeechStream, stopSpeaking, extractCompleteSentences, SpeechStreamHandle } from '@/lib/voiceOutput';
+import { CANDIDATE_GENDER_VOICE_IDS } from '@/lib/voices';
+import { markTiming } from '@/lib/timing';
+import { Avatar } from '@/components/Avatar';
+import { MicWaveform } from '@/components/MicWaveform';
 import { Mic, MicOff, Volume2, Send, Square, AlertCircle, Bot, User, MessageSquare, ShieldAlert } from 'lucide-react';
 
 interface VoiceCallPanelProps {
@@ -23,32 +28,32 @@ export function VoiceCallPanel({
   // Transcript state
   const [transcriptItems, setTranscriptItems] = useState<TranscriptItem[]>([]);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
-  const [interimText, setInterimText] = useState<string>('');
-  // Text revealed so far, in sync with TTS playback (via speech boundary events)
-  // rather than with how fast the LLM streamed tokens — this is what makes the
-  // transcript appear to "type" at the same pace the candidate is speaking.
+  // Text revealed so far, in sync with TTS playback (via ElevenLabs character
+  // timing alignment) rather than with how fast the LLM streamed tokens —
+  // this is what makes the transcript appear to "type" at the same pace the
+  // candidate is speaking.
   const [spokenText, setSpokenText] = useState<string>('');
 
   // Call status state
-  const [isListening, setIsListening] = useState<boolean>(false);
+  const [micToggleOn, setMicToggleOn] = useState<boolean>(false);
   const [isCandidateSpeaking, setIsCandidateSpeaking] = useState<boolean>(false);
   const [isLLMThinking, setIsLLMThinking] = useState<boolean>(false);
 
   // Errors & Fallbacks
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [browserSupported, setBrowserSupported] = useState<boolean>(true);
+  const [micSupported, setMicSupported] = useState<boolean>(true);
   const [manualInputText, setManualInputText] = useState<string>('');
   const [hasEnded, setHasEnded] = useState<boolean>(false);
+  // Best-effort preview of the mic transcript while still recording (see
+  // useVoiceInput's onInterimTranscript) — replaced by the real transcript
+  // item once the final, authoritative transcription lands.
+  const [interimTranscript, setInterimTranscript] = useState<string>('');
 
-  // Refs
-  const recognitionRef = useRef<any>(null);
-  const isListeningRef = useRef<boolean>(false);
-  const isCandidateSpeakingRef = useRef<boolean>(false);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   // Single source of truth for interview lifecycle. A ref (not state) so every
-  // async callback — speech recognition events, TTS callbacks, in-flight fetch
+  // async callback — mic transcripts, TTS callbacks, in-flight fetch
   // continuations — can synchronously check it before acting, with no race window.
   const interviewStatusRef = useRef<'active' | 'ended'>('active');
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -60,9 +65,13 @@ export function VoiceCallPanel({
   // comparisons after an earlier check get (incorrectly) flagged as unreachable.
   const isInterviewEnded = () => interviewStatusRef.current === 'ended';
 
-  // Idempotent teardown of every live side effect: TTS, in-flight LLM request,
-  // and speech recognition (handlers detached so late native events are no-ops).
-  // Safe to call multiple times and safe to call from an unmount cleanup.
+  // The mic should only actually be capturing when the user has it toggled on
+  // AND nobody else is talking/being generated for — this is what's passed to
+  // the recording hook, so it starts/stops the mic stream automatically.
+  const micActive = micToggleOn && !isCandidateSpeaking && !isLLMThinking && !hasEnded && micSupported;
+
+  // Idempotent teardown of every live side effect: TTS and the in-flight LLM
+  // request. Safe to call multiple times and safe to call from an unmount cleanup.
   const stopAllSideEffects = () => {
     if (isInterviewEnded()) return;
     interviewStatusRef.current = 'ended';
@@ -74,44 +83,22 @@ export function VoiceCallPanel({
 
     streamReaderRef.current?.cancel().catch(() => {});
     streamReaderRef.current = null;
-
-    isListeningRef.current = false;
-    isCandidateSpeakingRef.current = false;
-
-    const rec = recognitionRef.current;
-    if (rec) {
-      rec.onstart = null;
-      rec.onresult = null;
-      rec.onerror = null;
-      rec.onend = null;
-      try {
-        rec.abort();
-      } catch (e) {
-        // ignore
-      }
-      recognitionRef.current = null;
-    }
   };
 
-  // Sync ref state
+  // Check mic support on mount
   useEffect(() => {
-    isListeningRef.current = isListening;
-  }, [isListening]);
-
-  useEffect(() => {
-    isCandidateSpeakingRef.current = isCandidateSpeaking;
-  }, [isCandidateSpeaking]);
-
-  // Check browser speech recognition support on mount
-  useEffect(() => {
-    const supported = isSpeechRecognitionSupported();
-    setBrowserSupported(supported);
+    setMicSupported(typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia);
   }, []);
+
+  // Clear any stale interim preview once the mic actually stops listening.
+  useEffect(() => {
+    if (!micActive) setInterimTranscript('');
+  }, [micActive]);
 
   // Auto-scroll transcript to bottom
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [transcriptItems, interimText, isLLMThinking, spokenText]);
+  }, [transcriptItems, isLLMThinking, spokenText]);
 
   // Cleanup on unmount — catches navigation away from this screen by any path
   // (not just the "End Interview" button), so the interview can never keep
@@ -127,114 +114,38 @@ export function VoiceCallPanel({
     };
   }, []);
 
-  // Initialize SpeechRecognition instance
-  const initRecognition = () => {
-    if (recognitionRef.current) return recognitionRef.current;
-
-    const rec = createSpeechRecognition();
-    if (!rec) return null;
-
-    rec.onstart = () => {
+  const { levels, isTranscribing } = useVoiceInput({
+    active: micActive,
+    onTranscript: (text) => {
       if (isInterviewEnded()) return;
-      setIsListening(true);
-      setPermissionError(null);
-    };
-
-    rec.onresult = (event: any) => {
+      setInterimTranscript('');
+      handleInterviewerQuestion(text);
+    },
+    onInterimTranscript: (text) => {
       if (isInterviewEnded()) return;
-
-      let finalTranscript = '';
-      let interimTranscript = '';
-
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const transcriptPart = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcriptPart;
-        } else {
-          interimTranscript += transcriptPart;
-        }
-      }
-
-      if (interimTranscript) {
-        setInterimText(interimTranscript);
-      }
-
-      if (finalTranscript && finalTranscript.trim().length > 0) {
-        setInterimText('');
-        handleInterviewerQuestion(finalTranscript.trim());
-      }
-    };
-
-    rec.onerror = (event: any) => {
+      setInterimTranscript(text);
+    },
+    onError: (message) => {
       if (isInterviewEnded()) return;
-
-      console.error('Speech recognition error:', event.error);
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        setPermissionError('Microphone permission was denied. Please allow microphone access in your browser bar.');
-        setIsListening(false);
-      } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
-        setApiError(`Speech recognition error: ${event.error}`);
-      }
-    };
-
-    rec.onend = () => {
+      setApiError(message);
+    },
+    onPermissionDenied: () => {
       if (isInterviewEnded()) return;
-
-      setIsListening(false);
-      // Auto-restart if we are supposed to be listening and AI is NOT speaking
-      if (isListeningRef.current && !isCandidateSpeakingRef.current) {
-        try {
-          rec.start();
-        } catch (e) {
-          // ignore double start
-        }
-      }
-    };
-
-    recognitionRef.current = rec;
-    return rec;
-  };
+      setPermissionError('Microphone permission was denied. Please allow microphone access in your browser bar.');
+      setMicToggleOn(false);
+    },
+  });
 
   // Toggle Microphone
   const toggleListening = () => {
-    if (!browserSupported || isInterviewEnded()) return;
-
-    if (isListening) {
-      setIsListening(false);
-      isListeningRef.current = false;
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {
-          // ignore
-        }
-      }
-    } else {
-      const rec = initRecognition();
-      if (rec) {
-        try {
-          setPermissionError(null);
-          rec.start();
-          setIsListening(true);
-          isListeningRef.current = true;
-        } catch (e) {
-          console.error('Start recognition error:', e);
-        }
-      }
-    }
+    if (!micSupported || isInterviewEnded()) return;
+    setPermissionError(null);
+    setMicToggleOn((prev) => !prev);
   };
 
   // Handle Interviewer Question Submission
   const handleInterviewerQuestion = async (questionText: string) => {
     if (!questionText.trim() || isInterviewEnded()) return;
-
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {
-        // ignore
-      }
-    }
 
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -255,6 +166,7 @@ export function VoiceCallPanel({
 
     setIsLLMThinking(true);
     setApiError(null);
+    markTiming('llm-request-sent');
 
     // Own this request's abort signal. If "End Interview" fires while this is
     // in flight, the fetch is aborted and every check below stops it from
@@ -299,40 +211,14 @@ export function VoiceCallPanel({
         throw new Error('Streaming response did not include a readable body.');
       }
 
-      // Pull the full reply off the wire quietly (LLM generation is much
-      // faster than TTS playback) — we deliberately don't render it yet.
-      // Revealing it here would show the whole answer well before the
-      // candidate's voice starts, making the transcript feel instant rather
-      // than spoken. Instead we reveal it word-by-word below, in step with
-      // the TTS boundary events, so the text appears exactly as it's said.
       const reader = response.body.getReader();
       streamReaderRef.current = reader;
       const decoder = new TextDecoder();
       let candidateReplyText = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        if (isInterviewEnded()) {
-          await reader.cancel().catch(() => {});
-          break;
-        }
-
-        candidateReplyText += decoder.decode(value, { stream: true });
-      }
-
-      streamReaderRef.current = null;
-
-      if (isInterviewEnded()) return;
-
-      setIsLLMThinking(false);
-
-      if (!candidateReplyText.trim()) {
-        throw new Error('Candidate AI returned an empty response.');
-      }
-
-      const candidateTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      let sentenceBuffer = '';
+      let firstTokenSeen = false;
+      let speechQueue: SpeechStreamHandle | null = null;
+      let candidateTimestamp = '';
 
       // Commits the finished reply into the permanent transcript/history and
       // tears down the transient "speaking" reveal state. Shared by the TTS
@@ -353,45 +239,77 @@ export function VoiceCallPanel({
         setSpokenText('');
       };
 
-      setIsCandidateSpeaking(true);
-      isCandidateSpeakingRef.current = true;
-      setSpokenText('');
+      const voiceId = CANDIDATE_GENDER_VOICE_IDS[persona.gender || 'female'];
 
-      speakText(
-        candidateReplyText,
-        persona.gender,
-        () => {
-          if (isInterviewEnded()) return;
-
-          commitCandidateReply();
-          setIsCandidateSpeaking(false);
-          isCandidateSpeakingRef.current = false;
-
-          if (isListeningRef.current && browserSupported) {
-            const rec = initRecognition();
-            if (rec) {
-              try {
-                rec.start();
-              } catch (e) {
-                // ignore
-              }
-            }
+      // Lazily starts speech playback the moment the first complete sentence
+      // is available, instead of waiting for the whole reply to finish
+      // generating — this is what lets TTS overlap with LLM generation.
+      const ensureSpeechQueue = () => {
+        if (speechQueue) return speechQueue;
+        candidateTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        setIsLLMThinking(false);
+        setIsCandidateSpeaking(true);
+        setSpokenText('');
+        speechQueue = createSpeechStream(
+          voiceId,
+          () => {
+            if (isInterviewEnded()) return;
+            commitCandidateReply();
+            setIsCandidateSpeaking(false);
+          },
+          (err) => {
+            if (isInterviewEnded()) return;
+            console.error('TTS error:', err);
+            commitCandidateReply();
+            setIsCandidateSpeaking(false);
+          },
+          isInterviewEnded,
+          (charIndex) => {
+            if (isInterviewEnded()) return;
+            setSpokenText(candidateReplyText.slice(0, charIndex));
           }
-        },
-        (err) => {
-          if (isInterviewEnded()) return;
+        );
+        return speechQueue;
+      };
 
-          console.error('TTS error:', err);
-          commitCandidateReply();
-          setIsCandidateSpeaking(false);
-          isCandidateSpeakingRef.current = false;
-        },
-        isInterviewEnded,
-        (charIndex) => {
-          if (isInterviewEnded()) return;
-          setSpokenText(candidateReplyText.slice(0, charIndex));
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        if (isInterviewEnded()) {
+          await reader.cancel().catch(() => {});
+          break;
         }
-      );
+
+        const chunk = decoder.decode(value, { stream: true });
+        if (!firstTokenSeen && chunk) {
+          firstTokenSeen = true;
+          markTiming('llm-first-token');
+        }
+        candidateReplyText += chunk;
+        sentenceBuffer += chunk;
+
+        const { sentences, remainder } = extractCompleteSentences(sentenceBuffer);
+        sentenceBuffer = remainder;
+        for (const sentence of sentences) {
+          if (isInterviewEnded()) break;
+          ensureSpeechQueue().push(sentence);
+        }
+      }
+
+      streamReaderRef.current = null;
+
+      if (isInterviewEnded()) return;
+
+      if (!candidateReplyText.trim()) {
+        setIsLLMThinking(false);
+        throw new Error('Candidate AI returned an empty response.');
+      }
+
+      if (sentenceBuffer.trim()) {
+        ensureSpeechQueue().push(sentenceBuffer);
+      }
+      ensureSpeechQueue().end();
     } catch (err: unknown) {
       streamReaderRef.current = null;
       if (isInterviewEnded() || (err instanceof DOMException && err.name === 'AbortError')) {
@@ -420,15 +338,14 @@ export function VoiceCallPanel({
 
   const handleEnd = () => {
     // Terminate the lifecycle synchronously first — every in-flight callback
-    // (recognition events, TTS callbacks, the LLM fetch continuation) checks
+    // (mic transcript, TTS callbacks, the LLM fetch continuation) checks
     // this ref and will no-op even if it resolves after this point.
     stopAllSideEffects();
 
-    setIsListening(false);
+    setMicToggleOn(false);
     setIsCandidateSpeaking(false);
     setIsLLMThinking(false);
     setSpokenText('');
-    setInterimText('');
     setHasEnded(true);
 
     onEndInterview(transcriptItems, chatHistory);
@@ -437,13 +354,13 @@ export function VoiceCallPanel({
   return (
     <div className="w-full max-w-4xl mx-auto flex flex-col gap-6">
 
-      {!browserSupported && (
+      {!micSupported && (
         <div className="p-4 rounded-lg bg-white border border-hairline text-olive text-sm flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-muted shrink-0 mt-0.5" />
           <div>
-            <div className="font-medium">Speech recognition not supported</div>
+            <div className="font-medium">Microphone access not supported</div>
             <div className="text-muted text-sm mt-1">
-              Your current browser does not support the Web Speech API. For a hands-free voice experience, please open this app in <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>. You can still use the text input below to practice.
+              Your current browser does not support microphone capture. You can still use the text input below to practice.
             </div>
           </div>
         </div>
@@ -471,9 +388,7 @@ export function VoiceCallPanel({
 
       {/* Candidate Persona Card */}
       <div className="bg-white border border-hairline rounded-xl p-5 flex items-center gap-4">
-        <div className="w-12 h-12 rounded-lg bg-cream border border-hairline flex items-center justify-center shrink-0">
-          <Bot className="w-6 h-6 text-olive" />
-        </div>
+        <Avatar name={persona.name || 'Candidate'} size="md" speaking={isCandidateSpeaking} thinking={isLLMThinking} />
 
         <div>
           <div className="flex items-center gap-2">
@@ -519,13 +434,13 @@ export function VoiceCallPanel({
                   item.speaker === 'interviewer' ? 'bg-cream/60 -mx-6 px-6' : ''
                 }`}
               >
-                <div className="w-8 h-8 rounded-lg bg-white border border-hairline flex items-center justify-center shrink-0">
-                  {item.speaker === 'interviewer' ? (
+                {item.speaker === 'interviewer' ? (
+                  <div className="w-8 h-8 rounded-lg bg-white border border-hairline flex items-center justify-center shrink-0">
                     <User className="w-4 h-4 text-olive" />
-                  ) : (
-                    <Bot className="w-4 h-4 text-olive" />
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <Avatar name={persona.name || 'Candidate'} size="sm" />
+                )}
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-4 text-xs text-muted font-medium mb-1">
@@ -540,9 +455,7 @@ export function VoiceCallPanel({
 
           {isLLMThinking && (
             <div className="flex gap-3 items-center py-4">
-              <div className="w-8 h-8 rounded-lg bg-white border border-hairline flex items-center justify-center shrink-0">
-                <Bot className="w-4 h-4 text-olive" />
-              </div>
+              <Avatar name={persona.name || 'Candidate'} size="sm" thinking />
               <div className="flex items-center gap-2 text-sm text-muted">
                 <div className="w-3 h-3 border-2 border-muted/30 border-t-muted rounded-full animate-spin"></div>
                 <span>{persona.name || 'Candidate'} is formulating an answer&hellip;</span>
@@ -552,9 +465,7 @@ export function VoiceCallPanel({
 
           {isCandidateSpeaking && (
             <div className="flex gap-3 py-4">
-              <div className="w-8 h-8 rounded-lg bg-white border border-hairline flex items-center justify-center shrink-0">
-                <Volume2 className="w-4 h-4 text-olive" />
-              </div>
+              <Avatar name={persona.name || 'Candidate'} size="sm" speaking />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-4 text-xs text-muted font-medium mb-1">
                   <span>{persona.name || 'Candidate'}</span>
@@ -570,9 +481,16 @@ export function VoiceCallPanel({
           <div ref={transcriptEndRef} />
         </div>
 
-        {interimText && (
-          <div className="mt-3 px-4 py-2 rounded-full bg-cream border border-hairline text-muted text-sm max-w-full truncate">
-            <span className="text-olive font-medium mr-2">Hearing:</span> &quot;{interimText}&quot;
+        {isTranscribing && (
+          <div className="mt-3 px-4 py-2 rounded-full bg-cream border border-hairline text-muted text-sm max-w-full flex items-center gap-2 w-fit">
+            <div className="w-3 h-3 border-2 border-muted/30 border-t-muted rounded-full animate-spin"></div>
+            <span>Transcribing your question&hellip;</span>
+          </div>
+        )}
+
+        {!isTranscribing && interimTranscript && !hasEnded && (
+          <div className="mt-3 px-4 py-2 rounded-full bg-cream border border-hairline text-olive text-sm max-w-full w-fit">
+            {interimTranscript}
           </div>
         )}
 
@@ -581,16 +499,18 @@ export function VoiceCallPanel({
             <button
               type="button"
               onClick={toggleListening}
-              disabled={!browserSupported || isCandidateSpeaking || isLLMThinking || hasEnded}
-              title={isListening ? 'Stop listening' : 'Start speaking'}
+              disabled={!micSupported || isCandidateSpeaking || isLLMThinking || hasEnded}
+              title={micActive ? 'Stop listening' : 'Start speaking'}
               className={`shrink-0 w-10 h-10 rounded-lg flex items-center justify-center transition-colors ${
-                isListening
+                micActive
                   ? 'bg-terracotta text-white'
                   : 'bg-cream border border-hairline text-olive hover:border-terracotta/60'
               } disabled:opacity-40 disabled:cursor-not-allowed`}
             >
-              {isListening ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+              {micActive ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
             </button>
+
+            <MicWaveform active={micActive} levels={levels} />
 
             {/* Mic / candidate status, anchored right next to the mic control */}
             <div className="hidden md:flex items-center gap-1.5 text-xs font-medium whitespace-nowrap">
@@ -604,7 +524,7 @@ export function VoiceCallPanel({
                   <div className="w-3 h-3 border-2 border-muted/30 border-t-muted rounded-full animate-spin" />
                   Thinking&hellip;
                 </span>
-              ) : isListening ? (
+              ) : micActive ? (
                 <span className="flex items-center gap-1.5 text-terracotta-dark">
                   <span className="w-2 h-2 rounded-full bg-terracotta" />
                   Mic on

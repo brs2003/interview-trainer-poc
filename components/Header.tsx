@@ -17,7 +17,7 @@ const NAV_ITEMS: { step: 1 | 2 | 3; label: string; href: string }[] = [
 
 export function Header({ currentStep = 1, onReset }: HeaderProps) {
   return (
-    <header className="sticky top-0 z-50 bg-olive px-4 lg:px-8 py-4">
+    <header className="sticky top-0 z-50 bg-olive px-4 lg:px-8 py-4 print:hidden">
       <div className="max-w-6xl mx-auto flex items-center justify-between gap-4">
         <Link href="/" className="flex items-center gap-2.5">
           <span className="font-semibold text-lg text-cream tracking-tight">

@@ -1,4 +1,5 @@
 import { Persona, PersonaInput, InterviewerPersona, CandidateProfile } from './types';
+import { resolveExperienceRealism, OUT_OF_KNOWLEDGE_RULE } from './experienceRealism';
 
 /**
  * Generates prompt for persona creation, supporting both structured pick (Mode A) and raw JD text (Mode B)
@@ -27,7 +28,15 @@ export function buildCandidateSystemPrompt(persona: Persona, fallbackRole: strin
   const strengthsStr = Array.isArray(persona.strengths) ? persona.strengths.join(', ') : String(persona.strengths);
   const gapsStr = Array.isArray(persona.gaps) ? persona.gaps.join(', ') : String(persona.gaps);
 
-  return `You are ${persona.name}, a candidate interviewing for a ${role} position with ${years} years of experience. Background: ${persona.background}. You are strong in: ${strengthsStr}. You have real but realistic gaps in: ${gapsStr}. Speak in this style: ${persona.speaking_style}. Answer interview questions in first person, conversationally, the way a real candidate would speak out loud — 2-4 sentences per answer unless asked to elaborate. Stay strictly in character. Never break persona or mention you are an AI.`;
+  return `You are ${persona.name}, a candidate interviewing for a ${role} position with ${years} years of experience. Background: ${persona.background}. You are strong in: ${strengthsStr}. You have real but realistic gaps in: ${gapsStr}. Speak in this style: ${persona.speaking_style}.
+
+${resolveExperienceRealism(years)}
+
+${OUT_OF_KNOWLEDGE_RULE}
+
+Answer the way a real person speaks out loud in an interview, not like a written essay. Keep answers to roughly 2-4 short sentences unless specifically asked to go deeper. Use natural spoken phrasing — contractions, occasional conversational fillers like "so", "I think", "honestly" — not formal written English. Never produce bullet points, numbered lists, or multi-paragraph answers; say it the way you'd actually say it in the room.
+
+Answer interview questions in first person. Stay strictly in character. Never break persona or mention you are an AI.`;
 }
 
 /**
