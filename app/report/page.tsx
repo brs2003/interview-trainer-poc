@@ -240,10 +240,10 @@ export default function ReportPage() {
     if (!candidateReport || !payload.interviewerPersona) return null;
 
     return (
-      <div className="min-h-screen flex flex-col bg-cream text-olive">
+      <div className="min-h-screen flex flex-col bg-cream text-olive print:bg-white print:min-h-0">
         <Header currentStep={3} onReset={handleStartNewInterview} />
 
-        <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8">
+        <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8 print:p-0">
           <CandidateReportCard
             report={candidateReport}
             transcript={payload.transcriptItems || []}
@@ -260,10 +260,10 @@ export default function ReportPage() {
   if (!report) return null;
 
   return (
-    <div className="min-h-screen flex flex-col bg-cream text-olive">
+    <div className="min-h-screen flex flex-col bg-cream text-olive print:bg-white print:min-h-0">
       <Header currentStep={3} onReset={handleStartNewInterview} />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8 print:p-0">
         <ReportCard
           report={report}
           transcript={payload.transcriptItems || []}

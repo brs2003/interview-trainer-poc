@@ -20,7 +20,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={inter.variable}>
-      <body className="bg-cream text-olive min-h-screen flex flex-col selection:bg-terracotta/30 selection:text-olive antialiased font-sans">
+      <body className="bg-cream text-olive min-h-screen flex flex-col selection:bg-terracotta/30 selection:text-olive antialiased font-sans print:bg-white">
         {children}
       </body>
     </html>

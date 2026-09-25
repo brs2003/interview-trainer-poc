@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CandidateEvaluationReport, TranscriptItem, InterviewerPersona } from '@/lib/types';
-import { CheckCircle2, ChevronDown, ChevronUp, AlertCircle, MessageSquare, Lightbulb, MessageCircle, BrainCircuit, ListChecks, ShieldQuestion, Gauge, RotateCcw } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronUp, AlertCircle, MessageSquare, Lightbulb, MessageCircle, BrainCircuit, ListChecks, ShieldQuestion, Gauge, RotateCcw, Download } from 'lucide-react';
 
 interface CandidateReportCardProps {
   report: CandidateEvaluationReport;
@@ -22,6 +22,19 @@ export function CandidateReportCard({
   onStartNewInterview,
 }: CandidateReportCardProps) {
   const [showTranscript, setShowTranscript] = useState<boolean>(false);
+
+  // The transcript is collapsed by default on screen, but a downloaded/printed
+  // report should always include it in full — force it open right before the
+  // print dialog opens (covers both the Download button and a manual Ctrl+P).
+  useEffect(() => {
+    const handleBeforePrint = () => setShowTranscript(true);
+    window.addEventListener('beforeprint', handleBeforePrint);
+    return () => window.removeEventListener('beforeprint', handleBeforePrint);
+  }, []);
+
+  const handleDownload = () => {
+    window.print();
+  };
 
   const scoreKeys: (keyof CandidateEvaluationReport['scores'])[] = [
     'communication_clarity',
@@ -76,10 +89,18 @@ export function CandidateReportCard({
   };
 
   return (
-    <div className="w-full max-w-5xl mx-auto space-y-8 pb-12">
+    <div className="w-full max-w-5xl mx-auto space-y-8 pb-12 print:space-y-4 print:pb-0">
+
+      {/* Print-only document header (screen uses the sticky app Header instead) */}
+      <div className="hidden print:block">
+        <h1 className="text-2xl font-bold text-olive">Interview Trainer &mdash; Candidate Report</h1>
+        <p className="text-sm text-muted mt-1">
+          Generated {new Date().toLocaleDateString()} &middot; Interviewed by {persona.name} ({persona.title}, {persona.difficulty}) &middot; {role} ({years} yrs)
+        </p>
+      </div>
 
       {/* Hero grade banner */}
-      <div className="bg-white border border-hairline rounded-xl p-6 sm:p-8 flex flex-col sm:flex-row items-center justify-between gap-6">
+      <div className="bg-white border border-hairline rounded-xl p-6 sm:p-8 flex flex-col sm:flex-row items-center justify-between gap-6 print:border-0 print:p-0 print:break-inside-avoid">
         <div>
           <p className="text-sm font-medium text-muted mb-2">Candidate performance & feedback</p>
           <h1 className="text-2xl sm:text-3xl font-semibold text-olive tracking-tight">
@@ -104,7 +125,7 @@ export function CandidateReportCard({
       <div className="space-y-4">
         <h2 className="text-lg font-semibold text-olive">Dimension scores & feedback</h2>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 print:grid-cols-2 gap-4">
           {scoreKeys.map((key) => {
             const item = report.scores[key];
             const meta = dimensionTitles[key];
@@ -114,7 +135,7 @@ export function CandidateReportCard({
             return (
               <div
                 key={key}
-                className="bg-white border border-hairline rounded-xl p-5 flex flex-col justify-between"
+                className="bg-white border border-hairline rounded-xl p-5 flex flex-col justify-between print:break-inside-avoid"
               >
                 <div>
                   <div className="flex items-center justify-between gap-3 mb-3">
@@ -151,7 +172,7 @@ export function CandidateReportCard({
       </div>
 
       {/* Strengths Shown Section */}
-      <div className="bg-white border border-hairline rounded-xl p-6">
+      <div className="bg-white border border-hairline rounded-xl p-6 print:border-0 print:p-0 print:break-inside-avoid">
         <div className="flex items-center gap-2.5 mb-4">
           <div className="p-2 rounded-lg bg-cream border border-hairline">
             <CheckCircle2 className="w-5 h-5 text-olive" />
@@ -179,7 +200,7 @@ export function CandidateReportCard({
       </div>
 
       {/* Improvement Areas Section */}
-      <div className="bg-white border border-hairline rounded-xl p-6">
+      <div className="bg-white border border-hairline rounded-xl p-6 print:border-0 print:p-0 print:break-inside-avoid">
         <div className="flex items-center gap-2.5 mb-4">
           <div className="p-2 rounded-lg bg-cream border border-hairline">
             <AlertCircle className="w-5 h-5 text-olive" />
@@ -210,7 +231,7 @@ export function CandidateReportCard({
       </div>
 
       {/* Actionable Suggestions Checklist */}
-      <div className="bg-white border border-hairline rounded-xl p-6">
+      <div className="bg-white border border-hairline rounded-xl p-6 print:border-0 print:p-0 print:break-inside-avoid">
         <div className="flex items-center gap-2.5 mb-4">
           <div className="p-2 rounded-lg bg-cream border border-hairline">
             <Lightbulb className="w-5 h-5 text-olive" />
@@ -241,10 +262,10 @@ export function CandidateReportCard({
       </div>
 
       {/* Collapsible Full Transcript Viewer */}
-      <div className="bg-white border border-hairline rounded-xl overflow-hidden">
+      <div className="bg-white border border-hairline rounded-xl overflow-hidden print:border-0 print:break-before-page">
         <button
           onClick={() => setShowTranscript(!showTranscript)}
-          className="w-full p-5 flex items-center justify-between text-left hover:bg-cream/60 transition-colors"
+          className="w-full p-5 flex items-center justify-between text-left hover:bg-cream/60 transition-colors print:hidden"
         >
           <div className="flex items-center gap-2.5">
             <MessageSquare className="w-5 h-5 text-olive" />
@@ -260,13 +281,18 @@ export function CandidateReportCard({
           </div>
         </button>
 
+        <div className="hidden print:flex items-center gap-2.5 mb-3">
+          <MessageSquare className="w-5 h-5 text-olive" />
+          <h3 className="font-semibold text-olive text-base">Full interview transcript ({transcript.length} turns)</h3>
+        </div>
+
         {showTranscript && (
-          <div className="p-6 border-t border-hairline bg-cream/40 max-h-[500px] overflow-y-auto custom-scrollbar divide-y divide-hairline">
+          <div className="p-6 border-t border-hairline bg-cream/40 max-h-[500px] overflow-y-auto custom-scrollbar divide-y divide-hairline print:p-0 print:border-0 print:bg-white print:max-h-none print:overflow-visible">
             {transcript.map((item) => (
               <div
                 key={item.id}
-                className={`py-4 first:pt-0 text-sm ${
-                  item.speaker === 'interviewer' ? 'bg-white -mx-6 px-6 border-l-2 border-terracotta' : ''
+                className={`py-4 first:pt-0 text-sm print:break-inside-avoid ${
+                  item.speaker === 'interviewer' ? 'bg-white -mx-6 px-6 border-l-2 border-terracotta print:mx-0 print:px-3' : ''
                 }`}
               >
                 <div className="flex items-center justify-between font-medium mb-1 text-muted">
@@ -280,11 +306,19 @@ export function CandidateReportCard({
         )}
       </div>
 
-      {/* Start New Session CTA */}
-      <div className="flex justify-center pt-4">
+      {/* Start New Session / Download CTA */}
+      <div className="flex flex-col sm:flex-row justify-center gap-3 pt-4 print:hidden">
+        <button
+          onClick={handleDownload}
+          className="py-3.5 px-8 rounded-lg font-semibold text-olive bg-white border border-hairline hover:bg-cream active:scale-[0.99] transition-all flex items-center justify-center gap-2"
+        >
+          <Download className="w-4 h-4" />
+          <span>Download report (PDF)</span>
+        </button>
+
         <button
           onClick={onStartNewInterview}
-          className="py-3.5 px-8 rounded-lg font-semibold text-white bg-terracotta hover:bg-terracotta-dark active:scale-[0.99] transition-all flex items-center gap-2"
+          className="py-3.5 px-8 rounded-lg font-semibold text-white bg-terracotta hover:bg-terracotta-dark active:scale-[0.99] transition-all flex items-center justify-center gap-2"
         >
           <RotateCcw className="w-4 h-4" />
           <span>Practice another interview session</span>

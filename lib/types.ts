@@ -55,7 +55,7 @@ export interface InterviewerPersona {
   domainFocus: string;
   traits: string;
   tactics: string[];
-  voice: { pitch: number; rate: number };
+  voice: { voiceId: string };
 }
 
 export interface CandidateProfile {

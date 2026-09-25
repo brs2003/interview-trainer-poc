@@ -50,3 +50,12 @@ body {
 .animate-fade-in {
   animation: fade-in 0.25s ease-out;
 }
+
+/* The canvas-confetti celebration overlay on the report page is purely
+   decorative and can still be mid-animation if the user prints/downloads
+   right after the page loads — never let it leak into a printed document. */
+@media print {
+  canvas {
+    display: none !important;
+  }
+}

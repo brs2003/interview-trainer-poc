@@ -1,9 +1,10 @@
 import { InterviewerPersona } from './types';
+import { VOICE_IDS } from './voices';
 
 export const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
   {
-    id: 'meera',
-    name: 'Meera Iyer',
+    id: 'Vishal',
+    name: 'Vishal Patel',
     title: 'The Warm Screener',
     difficulty: 'Easy',
     domainFocus: 'General / HR-style',
@@ -13,11 +14,11 @@ export const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
       "If an answer is thin, gently invite more: 'Can you tell me a bit more about that?' rather than pushing hard.",
       "Occasionally affirm good answers out loud: 'That's a solid way to think about it.'",
     ],
-    voice: { pitch: 1.1, rate: 1.0 },
+    voice: { voiceId: VOICE_IDS.orion },
   },
   {
-    id: 'arjun',
-    name: 'Arjun Rao',
+    id: 'Aysha',
+    name: 'Aysha Rao',
     title: 'The Technical Deep-Diver',
     difficulty: 'Hard',
     domainFocus: 'Cloud / DevOps / Data Engineering',
@@ -27,11 +28,11 @@ export const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
       "If a claim sounds rehearsed, push with 'Give me a specific example from your own work, not the general concept.'",
       "Follow every technical answer with one layer deeper: 'And what happens if that fails?'",
     ],
-    voice: { pitch: 0.9, rate: 1.05 },
+    voice: { voiceId: VOICE_IDS.luna },
   },
   {
-    id: 'victor',
-    name: 'Victor Cole',
+    id: 'Umer',
+    name: 'Victor Umer',
     title: 'The Pressure Tester',
     difficulty: 'Brutal',
     domainFocus: 'General — any domain',
@@ -42,11 +43,11 @@ export const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
       "When the candidate hedges, push directly: 'I'm going to push back on that. Convince me.'",
       "Briefly acknowledge a genuinely strong answer, but flatly: 'Fine. Next.' — don't linger on praise.",
     ],
-    voice: { pitch: 0.85, rate: 1.1 },
+    voice: { voiceId: VOICE_IDS.zeus },
   },
   {
-    id: 'priya',
-    name: 'Priya Nair',
+    id: 'Aryan',
+    name: 'Aryan Gambir',
     title: 'The Behavioral Strategist',
     difficulty: 'Medium',
     domainFocus: 'General',
@@ -56,11 +57,11 @@ export const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
       "Return to a stated weakness later in the interview: 'Earlier you mentioned struggling with X — tell me about a time that came up.'",
       "If the candidate deflects a weakness question, ask once more, more specifically.",
     ],
-    voice: { pitch: 1.05, rate: 0.95 },
+    voice: { voiceId: VOICE_IDS.hyperion },
   },
   {
-    id: 'daniel',
-    name: 'Daniel Kim',
+    id: 'Gloriya',
+    name: 'Daniel Gloriya',
     title: 'The Skeptical Panelist',
     difficulty: 'Hard',
     domainFocus: 'Data / Cloud / DevOps',
@@ -70,11 +71,11 @@ export const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
       "Voice mild disagreement even with reasonable answers: 'I'm not sure I agree with that approach.'",
       "Ask the candidate to defend a tradeoff: 'What would you say to someone who thinks that's the wrong call?'",
     ],
-    voice: { pitch: 0.95, rate: 1.0 },
+    voice: { voiceId: VOICE_IDS.apollo },
   },
   {
-    id: 'sofia',
-    name: 'Sofia Alvarez',
+    id: 'Riya',
+    name: 'Riya Alvarez',
     title: 'The Rapid-Fire Quizzer',
     difficulty: 'Hard',
     domainFocus: 'Engineering — broad',
@@ -84,13 +85,13 @@ export const INTERVIEWER_PERSONAS: InterviewerPersona[] = [
       'Change topic abruptly between questions rather than following a smooth thread.',
       "If the candidate takes a long time to start answering, prompt: 'Take your time — but let's keep moving.'",
     ],
-    voice: { pitch: 1.0, rate: 1.15 },
+    voice: { voiceId: VOICE_IDS.athena },
   },
 ];
 
-export const DIFFICULTY_VOICE_DEFAULTS: Record<InterviewerPersona['difficulty'], { pitch: number; rate: number }> = {
-  Easy: { pitch: 1.1, rate: 1.0 },
-  Medium: { pitch: 1.0, rate: 1.0 },
-  Hard: { pitch: 0.95, rate: 1.05 },
-  Brutal: { pitch: 0.85, rate: 1.1 },
+export const DIFFICULTY_VOICE_DEFAULTS: Record<InterviewerPersona['difficulty'], { voiceId: string }> = {
+  Easy: { voiceId: VOICE_IDS.luna },
+  Medium: { voiceId: VOICE_IDS.hera },
+  Hard: { voiceId: VOICE_IDS.orion },
+  Brutal: { voiceId: VOICE_IDS.zeus },
 };
